@@ -43,6 +43,7 @@ static Process  processes[P1_MAXPROC];
 
 static int  numPages = 0;
 static int  numFrames = 0;
+static int nextFrame = 0;
  
 /*
  * Information about page faults.
@@ -128,7 +129,7 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	 
 	////////////////////////////////////////////////////////////David's
 	
-	 for(i = 0; i < P3_MAX_PAGERS; i++){
+	 for(i = 0; i < 1; i++){		//P3_MAX_PAGERS
 		char pagersName[20];
 		snprintf(pagersName, sizeof(pagersName), "Pager %d", i);
 		pagerIdTable[i] = P1_Fork(pagersName, Pager, NULL, USLOSS_MIN_STACK, 2);
@@ -379,12 +380,14 @@ Pager(void)
 	int errorCode;
 	int size = sizeof(Fault);
 	void *buffer;
+	void *vmRegion;
 	Fault currFault;
 	
 	buffer = malloc(sizeof(Fault));
 	
 	int frame = 1;
 	int protPtr = USLOSS_MMU_PROT_RW;
+	int pagePtr;
 	
 	while(1) {
         /* Wait for fault to occur (receive from pagerMbox) */
@@ -402,10 +405,16 @@ Pager(void)
 		//errorCode = USLOSS_MmuUnmap(0, 1);
 		//assert(errorCode == USLOSS_MMU_OK);
 		//errorCode=USLOSS_MmuGetMap(0,1, &frame, &protPtr );
-		errorCode = USLOSS_MmuMap(0, 0, 0, USLOSS_MMU_PROT_RW);
+		vmRegion=USLOSS_MmuRegion(&pagePtr);
+		errorCode = USLOSS_MmuMap(0, nextFrame, nextFrame, USLOSS_MMU_PROT_RW);
 		assert(errorCode == USLOSS_MMU_OK);
-		errorCode = USLOSS_MmuMap(0, 1, 1, USLOSS_MMU_PROT_RW);
-		assert(errorCode == USLOSS_MMU_OK);
+		memset(vmRegion+nextFrame*USLOSS_MmuPageSize(), '?', USLOSS_MmuPageSize());
+		nextFrame++;
+		
+		//errorCode = USLOSS_MmuMap(0, 1, 1, USLOSS_MMU_PROT_RW);
+		//assert(errorCode == USLOSS_MMU_OK);
+		//errorCode = USLOSS_MmuMap(0, 1, 2, USLOSS_MMU_PROT_RW);
+		//assert(errorCode == USLOSS_MMU_OK);
 		size = 0;
 		sendStatus = P2_MboxSend(currFault.mbox, NULL, &size);
 		
@@ -456,8 +465,6 @@ static void TestMMUDriver(void) {
 	assert(errorCode == USLOSS_MMU_OK);
 	errorCode = USLOSS_MmuMap(0, 1, 0, USLOSS_MMU_PROT_RW);
 	assert(errorCode == USLOSS_MMU_OK);
-	//errorCode = USLOSS_MmuMap(0, 1, 1, USLOSS_MMU_PROT_RW);
-	//assert(errorCode == USLOSS_MMU_OK);
 	
 	USLOSS_Console("erorr code is: %d\n", errorCode);
 }
