@@ -43,7 +43,9 @@ static Process  processes[P1_MAXPROC];
 
 static int  numPages = 0;
 static int  numFrames = 0;
-static int nextFrame = 0;
+
+//temporary
+static int nextPage = 0;
  
 /*
  * Information about page faults.
@@ -54,7 +56,16 @@ typedef struct Fault {
     int     mbox;       /* Where to send reply. */
     /* Add more stuff here if necessary. */
 } Fault;
- 
+
+typedef struct Frame {
+	int 	id;				/* Frame id*/
+	int 	pid;			/* Process id*/
+	int 	state;			/* */
+
+} Frame;
+
+static Frame *frmTable;
+
 static void *vmRegion = NULL;
  
 P3_VmStats  P3_vmStats;
@@ -66,6 +77,7 @@ static void CheckMode(void);
 static void FaultHandler(int type, void *arg);
 static int Pager(void);
 static void TestMMUDriver(void);
+static int findFreeFrame(int);
  
 void    P3_Fork(int pid);
 void    P3_Switch(int old, int new);
@@ -121,6 +133,12 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
         processes[i].numPages = 0;
         processes[i].pageTable = NULL;
     }
+	
+	//create Frame table
+	frmTable = (Frame *) malloc(frames * sizeof(Frame));
+	memset(frmTable, 0, frames * sizeof(Frame));
+	
+	
     /*
      * Create the page fault mailbox and fork the pagers here.
      */
@@ -129,7 +147,7 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	 
 	////////////////////////////////////////////////////////////David's
 	
-	 for(i = 0; i < 1; i++){		//P3_MAX_PAGERS
+	 for(i = 0; i < P3_MAX_PAGERS; i++){		//P3_MAX_PAGERS
 		char pagersName[20];
 		snprintf(pagersName, sizeof(pagersName), "Pager %d", i);
 		pagerIdTable[i] = P1_Fork(pagersName, Pager, NULL, USLOSS_MIN_STACK, 2);
@@ -385,7 +403,7 @@ Pager(void)
 	
 	buffer = malloc(sizeof(Fault));
 	
-	int frame = 1;
+	int freeFrame;
 	int protPtr = USLOSS_MMU_PROT_RW;
 	int pagePtr;
 	
@@ -399,22 +417,23 @@ Pager(void)
 		recStatus = P2_MboxReceive(pagerMbox, &currFault, &size);
 		assert(recStatus >= 0);
 		
-		//currFault = (*(Fault *) buffer);
+		
 		P1_DumpProcesses();
 		USLOSS_Console("enter pager process\n");
+		
 		//errorCode = USLOSS_MmuUnmap(0, 1);
 		//assert(errorCode == USLOSS_MMU_OK);
 		//errorCode=USLOSS_MmuGetMap(0,1, &frame, &protPtr );
-		vmRegion=USLOSS_MmuRegion(&pagePtr);
-		errorCode = USLOSS_MmuMap(0, nextFrame, nextFrame, USLOSS_MMU_PROT_RW);
-		assert(errorCode == USLOSS_MMU_OK);
-		memset(vmRegion+nextFrame*USLOSS_MmuPageSize(), '?', USLOSS_MmuPageSize());
-		nextFrame++;
 		
-		//errorCode = USLOSS_MmuMap(0, 1, 1, USLOSS_MMU_PROT_RW);
-		//assert(errorCode == USLOSS_MMU_OK);
-		//errorCode = USLOSS_MmuMap(0, 1, 2, USLOSS_MMU_PROT_RW);
-		//assert(errorCode == USLOSS_MMU_OK);
+		freeFrame = findFreeFrame(currFault.pid);
+		vmRegion=USLOSS_MmuRegion(&pagePtr);
+		
+		errorCode = USLOSS_MmuMap(0, nextPage, freeFrame, USLOSS_MMU_PROT_RW);
+		assert(errorCode == USLOSS_MMU_OK);
+		nextPage++;
+				
+		memset(vmRegion+freeFrame*USLOSS_MmuPageSize(), '?', USLOSS_MmuPageSize());
+		
 		size = 0;
 		sendStatus = P2_MboxSend(currFault.mbox, NULL, &size);
 		
@@ -467,4 +486,19 @@ static void TestMMUDriver(void) {
 	assert(errorCode == USLOSS_MMU_OK);
 	
 	USLOSS_Console("erorr code is: %d\n", errorCode);
+}
+
+int findFreeFrame(int currPID) {
+	int		i;		//loop counter
+	
+	for(i=0;i<numFrames;i++) {
+		if (frmTable[i].state == UNUSED) {
+			frmTable[i].state = INCORE;
+			frmTable[i].pid = currPID;
+			return i;
+		}
+	}
+	//cannot find a free frame
+	USLOSS_Console("cannot find a free frame\n");
+	USLOSS_Halt(1);
 }
