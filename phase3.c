@@ -1,3 +1,6 @@
+//David Smith
+//Kevin Kodama
+
 /*
  * skeleton.c
  *
@@ -138,17 +141,27 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	
  ////
     CheckMode();
+	
+	
+	//error checking prior to MMU INIT
+	if (mappings <= 0  || pages <= 0 || frames <= 0 ) {
+		return -1;
+	}
+	if (mappings != pages) {
+		return -1;
+	}
+	
     status = USLOSS_MmuInit(mappings, pages, frames);
     if (status != USLOSS_MMU_OK) {
        USLOSS_Console("P3_VmInit: couldn't initialize MMU, status %d\n", status);
-       USLOSS_Halt(1);
+       //USLOSS_Halt(1);
+	   if (status == USLOSS_MMU_ERR_ON) {
+		   return -2;
+	   }
     }
     vmRegion = USLOSS_MmuRegion(&tmp);
-	//USLOSS_Console("address of mmuregion in p3 vm init: %d\n", (int)vmRegion);
-    assert(vmRegion != NULL);
-	USLOSS_Console("the number of pages is: %d\n", tmp);
-	//USLOSS_Console("the number of pages is: %d\n", tmp);
-    assert(tmp >= pages);
+	//assert(vmRegion != NULL);
+	//assert(tmp >= pages);
     USLOSS_IntVec[USLOSS_MMU_INT] = FaultHandler;
     for (i = 0; i < P1_MAXPROC; i++) {
         processes[i].numPages = 0;
@@ -188,15 +201,7 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	P3_vmStats.freeFrames = frames;
     numPages = pages;
     numFrames = frames;
-    //return numPages * USLOSS_MmuPageSize();
-	
-	//testing only
-	//P1_Fork("TestMMUDriver", TestMMUDriver, NULL, USLOSS_MIN_STACK, 2);
-	//P1_Fork("TestSendMail", TestSendMail, NULL, USLOSS_MIN_STACK, 2);
-	//P1_Fork("TestRecMail", TestRecMail, NULL, USLOSS_MIN_STACK, 2);
-	
-	
-	return 0;
+    return 0;
 }
 /*
  *----------------------------------------------------------------------
@@ -216,20 +221,23 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 void
 P3_VmDestroy(void)
 {
-    
+    int status;
+	
 	CheckMode();
-    USLOSS_MmuDone();
+    status = USLOSS_MmuDone();
+	if (status==USLOSS_MMU_ERR_OFF) {
+		return;
+	}
 	
 	Fault killFault;
 	int killMsgSize = sizeof(killFault);
-	int status;
+	
     /*
      * Kill the pagers here.
      */
 	
 	killFault.pid = KILLSELF;
-	//USLOSS_Console("sending to pager mailbox to die\n");
-    status = P2_MboxSend(pagerMbox, &killFault, &killMsgSize); 
+	status = P2_MboxSend(pagerMbox, &killFault, &killMsgSize); 
 	 
     /* 
      * Print vm statistics.
@@ -266,12 +274,10 @@ P3_VmDestroy(void)
  */
 void
 P3_Fork(pid)
-    int     pid;        /* New process */
+    //int     pid;        /* New process */
 {
     int     i;
-	//USLOSS_Console("p3 fork is called:\n");
-	//P1_DumpProcesses();
-    CheckMode();
+	CheckMode();
     CheckPid(pid);
     processes[pid].numPages = numPages;
     processes[pid].pageTable = (PTE *) malloc(sizeof(PTE) * numPages);
@@ -309,38 +315,53 @@ P3_Quit(pid)
 	int 	i;
 	int 	frmNum;	//frame number to be reused
 	
-	//if(P1_GetPID()==15) {
-		//P1_DumpProcesses();
-	//}
-	
-    /* 
+	/* 
      * Free any of the process's pages that are on disk and free any page frames the
      * process is using.
      */
+	//P1_DumpProcesses(); 
+	//;;
+	if (pid == 19) {
+		USLOSS_Console("pid quit: %d\n", pid);
+		P1_DumpProcesses();
+	}
+	//
+	
 	if (processes[pid].pageTable != NULL && processes[pid].numPages > 0) { 
-	for (i=0;i<numPages;i++) {
-		frmNum = processes[pid].pageTable[i].frame;
 		
-		//check for a valid frame number
-		if (frmNum > -1 && frmNum < numFrames) {
-			frmTable[frmNum].pid = 0;
-			frmTable[frmNum].state = UNUSED;
-			USLOSS_MmuUnmap(TAG,i);
-			processes[pid].pageTable[i].frame = -1;
-			P3_vmStats.freeFrames++;
-		}
-	} 
+		//88888888888   CHANGE THIS BACK  //8888888888888888888888888
+		//for (i=0;i<numPages;i++) {
+		
+		
+		for (i=0;i<processes[pid].numPages;i++) {
+			frmNum = processes[pid].pageTable[i].frame;
+		
+			P1_P(semFreeFrame);
+		
+			//check for a valid frame number.  If so update the frmTable and the PTE
+			if (frmNum > -1 && frmNum < numFrames) {
+				frmTable[frmNum].pid = 0;
+				frmTable[frmNum].state = UNUSED;
+				USLOSS_MmuUnmap(TAG,i);
+				processes[pid].pageTable[i].frame = -1;
+			
+				P1_P(semP3_VmStats);
+				P3_vmStats.freeFrames++;
+				P1_V(semP3_VmStats);
+			
+			}
+		
+			P1_V(semFreeFrame);
+		} 
 	
  
     /* Clean up the page table. */
- 
 	
-		free((char *) processes[pid].pageTable);
-	//	P1_DumpProcesses();
+ 		free((char *) processes[pid].pageTable);
 		processes[pid].numPages = 0;
 		processes[pid].pageTable = NULL;
-	}
-    
+	}	//if
+   
 }
  
 /*
@@ -383,7 +404,7 @@ P3_Switch(old, new)
      * for it must be in the MMU. Remove it.
      */
     if (processes[old].pageTable[page].state == INCORE) {
-        assert(processes[old].pageTable[page].frame != -1);
+        //assert(processes[old].pageTable[page].frame != -1);
         status = USLOSS_MmuUnmap(TAG, page);
         if (status != USLOSS_MMU_OK) {
           // report error and abort
@@ -396,7 +417,7 @@ P3_Switch(old, new)
      * for it to the MMU.
      */
     if (processes[new].pageTable[page].state == INCORE) {
-        assert(processes[new].pageTable[page].frame != -1);
+        //assert(processes[new].pageTable[page].frame != -1);
         status = USLOSS_MmuMap(TAG, page, processes[new].pageTable[page].frame,
             USLOSS_MMU_PROT_RW);
         if (status != USLOSS_MMU_OK) {
@@ -431,12 +452,12 @@ FaultHandler(type, arg)
     Fault   fault;
     int     size;
  
-	USLOSS_Console("fault handler was called %d times \n", P3_vmStats.faults);
+	//USLOSS_Console("fault handler was called %d times \n", P3_vmStats.faults);
+ //
  
- 
-    assert(type == USLOSS_MMU_INT);
+    //assert(type == USLOSS_MMU_INT);
     cause = USLOSS_MmuGetCause();
-    assert(cause == USLOSS_MMU_FAULT);
+    //assert(cause == USLOSS_MMU_FAULT);
 	
 	P1_P(semP3_VmStats);
 		
@@ -447,27 +468,19 @@ FaultHandler(type, arg)
 	fault.pid = P1_GetPID();
     fault.addr = arg;
     fault.mbox = P2_MboxCreate(1, 0);
-    assert(fault.mbox >= 0);
+    //assert(fault.mbox >= 0);
     size = sizeof(fault);
-	USLOSS_Console("sending to pager mailbox pid %d, addr %x mbox %d\n", fault.pid, fault.addr, fault.mbox);
+	//USLOSS_Console("sending to pager mailbox pid %d, addr %x mbox %d\n", fault.pid, fault.addr, fault.mbox);
     status = P2_MboxSend(pagerMbox, &fault, &size);
-    assert(status >= 0);
-    assert(size == sizeof(fault));
+    //assert(status >= 0);
+    //assert(size == sizeof(fault));
     size = 0;
     status = P2_MboxReceive(fault.mbox, NULL, &size);
-	USLOSS_Console("fault handler heard back from pager\n");
+	//USLOSS_Console("fault handler heard back from pager\n");
 	
-	//per LO's suggestion
-		//errorCode = USLOSS_MmuMap(0, fault.pid, processes[fault.pid].pageTable[fpage].frame , USLOSS_MMU_PROT_RW);
-		//processes[fault.pid].pageTable[fpage].frame = freeFrame;
-		//processes[fault.pid].pageTable[fpage].state = INCORE;
-	
-
-	
-	
-    assert(status >= 0);
+	//assert(status >= 0);
     status = P2_MboxRelease(fault.mbox);
-    assert(status == 0);
+    //assert(status == 0);
 }
  
 /*
@@ -494,14 +507,9 @@ Pager(void* arg)
 	int quitStatus=0;
 	int errorCode;
 	int size = sizeof(Fault);
-	//void *buffer;
 	void *vmRegion;
-	//Fault currFault;
-	
-	//buffer = malloc(sizeof(Fault));
 	
 	int freeFrame;
-	//int protPtr = USLOSS_MMU_PROT_RW;
 	int pagePtr;
 	int nosize = 0; //the size of the message sent back to FaultHandler.  This need to be a separate variable
 	int pagerPID;
@@ -519,14 +527,12 @@ Pager(void* arg)
 		memset(p4buffer,0, sizeof(Fault));
 		//USLOSS_Console("right after memset, pid %d, addr %x  mbox %d\n", p4buffer->pid, p4buffer->addr, p4buffer->mbox);		
 		recStatus = P2_MboxReceive(pagerMbox, p4buffer, &size);
-		USLOSS_Console("pager just got another mesage, pid %d, addr %x  mbox %d\n", p4buffer->pid, p4buffer->addr, p4buffer->mbox);
-		assert(recStatus >= 0);
+		//USLOSS_Console("pager just got another mesage, pid %d, addr %x  mbox %d\n", p4buffer->pid, p4buffer->addr, p4buffer->mbox);
+		//assert(recStatus >= 0);
 		
 		/*check to see if its been killed*/
 		if( (p4buffer->pid) == KILLSELF)  {
-			int* x = malloc(sizeof(int));
-			free(x);
-			USLOSS_Console("Pager trying to quit\n");
+			//USLOSS_Console("Pager trying to quit\n");
 			P1_Quit(quitStatus);
 			
 		}
@@ -538,7 +544,7 @@ Pager(void* arg)
 		
 		//compute page number
 		fpage = (int )currFault.addr/USLOSS_MmuPageSize();
-		USLOSS_Console("fpage is: %d\n", fpage);
+		//USLOSS_Console("fpage is: %d\n", fpage);
 		
 		free(p4buffer);		
 		
@@ -546,7 +552,7 @@ Pager(void* arg)
 		if (processes[currFault.pid].pageTable[fpage].state == UNUSED) {
 			P3_vmStats.new++;
 		} 
-		
+		//
 		
 		//P1_DumpProcesses();
 		//USLOSS_Console("enter pager process\n");
@@ -556,14 +562,14 @@ Pager(void* arg)
 		P1_P(semFreeFrame);
 		
 		freeFrame = findFreeFrame(currFault.pid);
-		USLOSS_Console("frree frame: %d\n", freeFrame);
+		//USLOSS_Console("frree frame: %d\n", freeFrame);
 		vmRegion=USLOSS_MmuRegion(&pagePtr);
 		
 		pagerPID = P1_GetPID();		//ask LO is this needed?
 		
 		//ask LO is this needed?  Give mapping to Pager and update Pagers pageTable
 		errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
-		assert(errorCode == USLOSS_MMU_OK);
+		//assert(errorCode == USLOSS_MMU_OK);
 		processes[pagerPID].pageTable[fpage].frame = freeFrame;
 		processes[pagerPID].pageTable[fpage].state = INCORE;
 		
@@ -573,11 +579,11 @@ Pager(void* arg)
 		errorCode = USLOSS_MmuUnmap(0, fpage);
 		processes[pagerPID].pageTable[fpage].frame = -1;
 		processes[pagerPID].pageTable[fpage].state = UNUSED;
-		assert(errorCode == USLOSS_MMU_OK);
+		//assert(errorCode == USLOSS_MMU_OK);
 				
 		
 		//assign mapping to the faulting process
-		//errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
+		errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
 		processes[currFault.pid].pageTable[fpage].frame = freeFrame;
 		processes[currFault.pid].pageTable[fpage].state = INCORE;
 				
@@ -625,66 +631,9 @@ int P3_Startup(void *arg)
     assert(rc == 0);
 	return 0;
 }
-/*
-static void TestMMUDriver(void) {
-	int errorCode;
-	
-	errorCode = USLOSS_MmuMap(0, 0, 6, USLOSS_MMU_PROT_READ);
-	assert(errorCode == USLOSS_MMU_ERR_FRAME);
-	errorCode = USLOSS_MmuMap(0, 0, 4, USLOSS_MMU_PROT_READ);
-	assert(errorCode == USLOSS_MMU_ERR_FRAME);
-	errorCode = USLOSS_MmuMap(0, 2, 0, USLOSS_MMU_PROT_READ);
-	assert(errorCode == USLOSS_MMU_ERR_PAGE);
-	errorCode = USLOSS_MmuMap(0, 0, 1, USLOSS_MMU_PROT_RW);
-	assert(errorCode == USLOSS_MMU_OK);
-	errorCode = USLOSS_MmuMap(0, 1, 0, USLOSS_MMU_PROT_RW);
-	assert(errorCode == USLOSS_MMU_OK);
-	
-	USLOSS_Console("erorr code is: %d\n", errorCode);
-}
 
-*/
-/*this test method works but has nothing to do with phase 3*/
-/*
-static void TestRecMail(void) {
-	int recStatus, sendStatus;
-	int size;
-	
-	size = sizeof(Fault);
-	int pidCount=1;
-	int mboxCount=100;
-	
-	
-	while(1) {
-		Fault currFault, f1, f2;
-		Fault* p4buffer = malloc(sizeof(Fault));
-		//Fault p4buffer;
-        
-		f1.pid = pidCount++;
-		f1.mbox = mboxCount;
-		f1.addr = (void *) 0x245;
-		mboxCount += 100;
-		
-		sendStatus = P2_MboxSend(pagerMbox, &f1, &size);
-        recStatus = P2_MboxReceive(pagerMbox, p4buffer, &size);
-		//USLOSS_Console("pager just got another mesage, pid %d, addr %x  mbox %d\n", p4buffer.pid, p4buffer.addr, p4buffer.mbox);
-		USLOSS_Console("pager just got another mesage, pid %d, addr %x  mbox %d\n", p4buffer->pid, p4buffer->addr, p4buffer->mbox);
-		
-		//currFault.pid = p4buffer->pid;
-		//currFault.addr = p4buffer->addr;
-		//currFault.mbox = p4buffer->mbox;
-		free(p4buffer);		
-		
-		if (pidCount == 3) {
-			return;
-		}
-		
-			
-	}
 
-	
-}	
-*/
+
 int findFreeFrame(int currPID) {
 	int		i;		//loop counter
 	
@@ -697,7 +646,7 @@ int findFreeFrame(int currPID) {
 		}
 	}
 	//cannot find a free frame
-	USLOSS_Console("cannot find a free frame\n");
-	USLOSS_Halt(1);
+	//USLOSS_Console("cannot find a free frame\n");
+	//USLOSS_Halt(1);
 	return 0;
 }
