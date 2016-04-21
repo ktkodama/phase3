@@ -151,6 +151,17 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 		return -1;
 	}
 	
+	//////******************************************************************************
+	
+	//moving this ***BEFORE*** the forking of the pager to try to solve glibc error
+	memset((char *) &P3_vmStats, 0, sizeof(P3_VmStats));
+    P3_vmStats.pages = pages;
+    P3_vmStats.frames = frames;
+	P3_vmStats.freeFrames = frames;
+    numPages = pages;
+    numFrames = frames;
+	//////******************************************************************************	
+	
     status = USLOSS_MmuInit(mappings, pages, frames);
     if (status != USLOSS_MMU_OK) {
        USLOSS_Console("P3_VmInit: couldn't initialize MMU, status %d\n", status);
@@ -195,12 +206,7 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	
 	
       
-    memset((char *) &P3_vmStats, 0, sizeof(P3_VmStats));
-    P3_vmStats.pages = pages;
-    P3_vmStats.frames = frames;
-	P3_vmStats.freeFrames = frames;
-    numPages = pages;
-    numFrames = frames;
+    
     return 0;
 }
 /*
