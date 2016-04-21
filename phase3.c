@@ -328,8 +328,8 @@ P3_Quit(pid)
 	//P1_DumpProcesses(); 
 	//;;
 	if (pid == 19) {
-		USLOSS_Console("pid quit: %d\n", pid);
-		P1_DumpProcesses();
+		//USLOSS_Console("pid quit: %d\n", pid);
+		//P1_DumpProcesses();
 	}
 	//
 	
