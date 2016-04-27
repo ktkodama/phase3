@@ -104,11 +104,6 @@ P1_Semaphore semMutex;
 P1_Semaphore semP3_VmStats;
 P1_Semaphore semClockPos;
 
-
-
- ////
- 
- 
 //////////////////////////////////////////////////////////// David's
 static int pagerIdTable[P3_MAX_PAGERS];  
 ////////////////////////////////////////////////////////////Addition
@@ -590,6 +585,37 @@ Pager(void* arg)
 		freeFrame = findFreeFrame(currFault.pid, fpage);
 		USLOSS_Console("frree frame: %d\n", freeFrame);
 		
+		P1_V(semFreeFrame);
+		
+		
+		//phase 3a logic..An unused frame exists
+		//**************************************************************************************************
+		if (freeFrame != -1)  {
+			vmRegion=USLOSS_MmuRegion(&pagePtr);
+			pagerPID = P1_GetPID();		//ask LO is this needed?
+			
+			//ask LO is this needed?  Give mapping to Pager and update Pagers pageTable
+			errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
+			assert(errorCode == USLOSS_MMU_OK);
+			processes[pagerPID].pageTable[fpage].frame = freeFrame;
+			processes[pagerPID].pageTable[fpage].state = INCORE;
+			
+			memset(vmRegion+fpage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
+			
+			//ask LO is this needed?  Unmap this from the Pager process and give mapping to the faulting process
+			errorCode = USLOSS_MmuUnmap(0, fpage);
+			processes[pagerPID].pageTable[fpage].frame = -1;
+			processes[pagerPID].pageTable[fpage].state = UNUSED;
+			//assert(errorCode == USLOSS_MMU_OK);
+					
+			
+			//assign mapping to the faulting process
+			errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
+			processes[currFault.pid].pageTable[fpage].frame = freeFrame;
+			processes[currFault.pid].pageTable[fpage].state = INCORE;
+				
+		}
+		//**************************************************************************************************
 		//cannot find an unused frame
 		if (freeFrame == -1) {
 			
@@ -601,58 +627,46 @@ Pager(void* arg)
 					
 			P1_V(semClockPos);
 			
-			//find page associated with frame
+			//find old page associated with frame
 			oldPage = frmTable[freeFrame].page;
 			oldPID = frmTable[freeFrame].pid;
+			USLOSS_Console("oldPage: %d oldPID: %d", oldPage, oldPID);
+			
+			//update the page tables for the old process and the new processes 
+			processes[oldPID].pageTable[oldPage].frame = -1;
+			processes[oldPID].pageTable[oldPage].state = ONDISK;
+			//TODO:
+			//processes[oldPID].pageTable[oldPage].block =
 			
 			//check if the page to be replaced is dirty 
-			returnVal = USLOSS_MmuGetAccess(clockPos, &accessPtr);
+			returnVal = USLOSS_MmuGetAccess(freeFrame, &accessPtr);
 			if ( ((accessPtr) & (1 << 1))  == 0 )  {  
 				buffer = malloc(sizeof(USLOSS_MmuPageSize()));
 				memcpy(buffer, vmRegion+oldPage*USLOSS_MmuPageSize() , USLOSS_MmuPageSize());
 				returnVal = P2_DiskWrite(unit, track, first , sectors , buffer);
 				assert(returnVal==0);
 			}
-		
-			//update the page tables for the old process and the new processes 
-			processes[oldPID].pageTable[oldPage].frame = -1;
-			processes[oldPID].pageTable[oldPage].state = ONDISK;
-		}
-		
-		vmRegion=USLOSS_MmuRegion(&pagePtr);
-		pagerPID = P1_GetPID();		//ask LO is this needed?
-		
-		//ask LO is this needed?  Give mapping to Pager and update Pagers pageTable
-		errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
-		assert(errorCode == USLOSS_MMU_OK);
-		processes[pagerPID].pageTable[fpage].frame = freeFrame;
-		processes[pagerPID].pageTable[fpage].state = INCORE;
-		
-		memset(vmRegion+fpage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
-		
-		//ask LO is this needed?  Unmap this from the Pager process and give mapping to the faulting process
-		errorCode = USLOSS_MmuUnmap(0, fpage);
-		processes[pagerPID].pageTable[fpage].frame = -1;
-		processes[pagerPID].pageTable[fpage].state = UNUSED;
-		//assert(errorCode == USLOSS_MMU_OK);
+						
+			//update frame table here and not in runClockAlgo() 
+			frmTable[freeFrame].page = fpage;
+			frmTable[freeFrame].pid = currFault.pid;
+			frmTable[freeFrame].state = INCORE;
+			
+			//TODO:
+			//check if replacement page is new or on disk
+			
 				
-		
-		//assign mapping to the faulting process
-		errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
-		processes[currFault.pid].pageTable[fpage].frame = freeFrame;
-		processes[currFault.pid].pageTable[fpage].state = INCORE;
+		}	//if freeFrame != -1
+		//**************************************************************************************************************8
 				
-		P1_V(semFreeFrame);
-		
-		
 		//size = 0;		///this is a big bug
 		sendStatus = P2_MboxSend(currFault.mbox, NULL, &nosize);
 		
 		
-    }
+    }	//end of while (1)
     /* Never gets here. */
     return 1;
-}
+}	//end of Pager
  
 /*
  * Helper routines
@@ -728,9 +742,9 @@ int runClockAlgo(int currPID, int pageNum) {
 		
 		USLOSS_Console("accessPtr: %d\n", accessPtr);
 		if ( ((accessPtr) & (1 << 0))  == 0 )  {  //USLOSS_MMU_REF not set accessPtr & (1 << 0)
-			frmTable[clockPos].state = INCORE;
-			frmTable[clockPos].pid = currPID;
-			frmTable[clockPos].page = pageNum;
+			//frmTable[clockPos].state = INCORE;
+			//frmTable[clockPos].pid = currPID;
+			//frmTable[clockPos].page = pageNum;
 			//P3_vmStats.freeFrames--;
 			USLOSS_Console("free frame from clock algo: %d\n", clockPos);
 			freeFrame = clockPos;
