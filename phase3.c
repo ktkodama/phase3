@@ -24,6 +24,7 @@
  
 #define UNUSED  0
 #define INCORE  1
+#define ONDISK  2
 /* You'll probably want more states */
 
 /*kill message*/
@@ -50,6 +51,7 @@ static Process  processes[P1_MAXPROC];
 
 static int  numPages = 0;
 static int  numFrames = 0;
+static int clockPos = 0; 	//the position of the clock hand;
 
 //temporary
 //static int nextPage = 0;
@@ -65,7 +67,7 @@ typedef struct Fault {
 } Fault;
 
 typedef struct Frame {
-	int 	id;				/* Frame id*/
+	int 	page;			/* Page*/
 	int 	pid;			/* Process id*/
 	int 	state;			/* */
 
@@ -85,7 +87,8 @@ static void FaultHandler(int type, void *arg);
 static int Pager(void *arg);
 //static void TestMMUDriver(void);
 //static void TestRecMail(void);
-static int findFreeFrame(int);
+static int findFreeFrame(int, int);
+static int runClockAlgo(int currPID, int) ;
  
 void    P3_Fork(int pid);
 void    P3_Switch(int old, int new);
@@ -99,6 +102,7 @@ P1_Semaphore semFreeFrame;
 P1_Semaphore semProcTable;
 P1_Semaphore semMutex;
 P1_Semaphore semP3_VmStats;
+P1_Semaphore semClockPos;
 
 
 
@@ -138,6 +142,7 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	semProcTable = P1_SemCreate(1);
 	semMutex = P1_SemCreate(1);
 	semP3_VmStats = P1_SemCreate(1);
+	semClockPos = P1_SemCreate(1);
 	
  ////
     CheckMode();
@@ -520,6 +525,21 @@ Pager(void* arg)
 	int nosize = 0; //the size of the message sent back to FaultHandler.  This need to be a separate variable
 	int pagerPID;
 	
+	int oldPID;
+	int oldPage;
+	int accessPtr;
+	//int i;
+	
+	int unit = 1;
+	int track = 0;
+	int first = 0;
+	int sectors = USLOSS_MmuPageSize() / USLOSS_DISK_SECTOR_SIZE;	
+	void *buffer;
+	int returnVal;
+	
+	//int blnReplacePage = 1;
+
+	
 	while(1) {
         /* Wait for fault to occur (receive from pagerMbox) */
         /* Find a free frame */
@@ -561,21 +581,50 @@ Pager(void* arg)
 		//
 		
 		//P1_DumpProcesses();
-		//USLOSS_Console("enter pager process\n");
-		//USLOSS_Console("currFault.pid: %d\n", currFault.pid);
-		//USLOSS_Console("currFault.addr: %x\n", currFault.addr);
+		USLOSS_Console("enter pager process\n");
+		USLOSS_Console("currFault.pid: %d\n", currFault.pid);
+		USLOSS_Console("currFault.addr: %x\n", currFault.addr);
 		
 		P1_P(semFreeFrame);
 		
-		freeFrame = findFreeFrame(currFault.pid);
-		//USLOSS_Console("frree frame: %d\n", freeFrame);
-		vmRegion=USLOSS_MmuRegion(&pagePtr);
+		freeFrame = findFreeFrame(currFault.pid, fpage);
+		USLOSS_Console("frree frame: %d\n", freeFrame);
 		
+		//cannot find an unused frame
+		if (freeFrame == -1) {
+			
+			P1_P(semClockPos);
+			
+			//find a frame to use
+			freeFrame = runClockAlgo(currFault.pid,fpage);
+			USLOSS_Console("freeFrame after return from clockAlgo %d\n", freeFrame);
+					
+			P1_V(semClockPos);
+			
+			//find page associated with frame
+			oldPage = frmTable[freeFrame].page;
+			oldPID = frmTable[freeFrame].pid;
+			
+			//check if the page to be replaced is dirty 
+			returnVal = USLOSS_MmuGetAccess(clockPos, &accessPtr);
+			if ( ((accessPtr) & (1 << 1))  == 0 )  {  
+				buffer = malloc(sizeof(USLOSS_MmuPageSize()));
+				memcpy(buffer, vmRegion+oldPage*USLOSS_MmuPageSize() , USLOSS_MmuPageSize());
+				returnVal = P2_DiskWrite(unit, track, first , sectors , buffer);
+				assert(returnVal==0);
+			}
+		
+			//update the page tables for the old process and the new processes 
+			processes[oldPID].pageTable[oldPage].frame = -1;
+			processes[oldPID].pageTable[oldPage].state = ONDISK;
+		}
+		
+		vmRegion=USLOSS_MmuRegion(&pagePtr);
 		pagerPID = P1_GetPID();		//ask LO is this needed?
 		
 		//ask LO is this needed?  Give mapping to Pager and update Pagers pageTable
 		errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
-		//assert(errorCode == USLOSS_MMU_OK);
+		assert(errorCode == USLOSS_MMU_OK);
 		processes[pagerPID].pageTable[fpage].frame = freeFrame;
 		processes[pagerPID].pageTable[fpage].state = INCORE;
 		
@@ -631,7 +680,15 @@ int P3_Startup(void *arg)
 {
     int rc;
 	int child;
+	
+	int unit = 1;
+	int sectorSize;
+	int numSectorPerTrack;
+	int numTracks;
 		
+	Sys_DiskSize(unit, &sectorSize, &numSectorPerTrack, &numTracks);
+	USLOSS_Console("disk info: %d %d %d %d\n", unit, sectorSize, numSectorPerTrack, numTracks);	
+	
 	p4_return_pid = Sys_Spawn("P4_Startup", P4_Startup, NULL,  4 * USLOSS_MIN_STACK, 3, p4_pid_ptr);
 	rc = Sys_Wait(&p4_return_pid, &child);
     assert(rc == 0);
@@ -640,13 +697,14 @@ int P3_Startup(void *arg)
 
 
 
-int findFreeFrame(int currPID) {
+int findFreeFrame(int currPID, int pageNum) {
 	int		i;		//loop counter
 	
 	for(i=0;i<numFrames;i++) {
 		if (frmTable[i].state == UNUSED) {
 			frmTable[i].state = INCORE;
 			frmTable[i].pid = currPID;
+			frmTable[i].page = pageNum;
 			P3_vmStats.freeFrames--;
 			return i;
 		}
@@ -654,5 +712,58 @@ int findFreeFrame(int currPID) {
 	//cannot find a free frame
 	//USLOSS_Console("cannot find a free frame\n");
 	//USLOSS_Halt(1);
-	return 0;
+	return -1;
 }
+
+int runClockAlgo(int currPID, int pageNum) {
+//	int 	i; 		//loop counter
+	int 	returnVal;
+	int 	freeFrame = -1;
+	int 	accessPtr;
+	int 	blnFound = 0;
+		
+	while(! blnFound ) {
+		returnVal = USLOSS_MmuGetAccess(clockPos, &accessPtr);
+		assert(returnVal==0);
+		
+		USLOSS_Console("accessPtr: %d\n", accessPtr);
+		if ( ((accessPtr) & (1 << 0))  == 0 )  {  //USLOSS_MMU_REF not set accessPtr & (1 << 0)
+			frmTable[clockPos].state = INCORE;
+			frmTable[clockPos].pid = currPID;
+			frmTable[clockPos].page = pageNum;
+			//P3_vmStats.freeFrames--;
+			USLOSS_Console("free frame from clock algo: %d\n", clockPos);
+			freeFrame = clockPos;
+			blnFound = 1;
+			clockPos++;		//advance clockhand to next frame
+			if (clockPos == numFrames) {	//set clock hand back to zero
+				clockPos = 0;
+			}
+			break;
+				
+		}	//if
+		else {	///clear the reference bit and advance clock hand
+			USLOSS_MmuSetAccess(clockPos, (accessPtr &= ~ (1 << 0)) );   // num &=  ~(1 << 0);
+			//USLOSS_Console("after clearing reference bit accessptr: %d\n", accessPtr);
+			clockPos++;
+			if (clockPos == numFrames) {	//set clock hand back to zero
+				clockPos = 0;
+			}
+		}
+	}	//for
+/*	
+	if (freeFrame == -1) {
+		frmTable[clockPos].state = INCORE;
+		frmTable[clockPos].pid = currPID;
+		freeFrame = clockPos;
+	}
+*/	
+	return freeFrame;
+	
+	
+	
+	//USLOSS_Console("clock algo failed\n");
+	//USLOSS_Halt(1);
+
+}
+
