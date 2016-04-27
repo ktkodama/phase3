@@ -610,14 +610,15 @@ Pager(void* arg)
 					
 			
 			//assign mapping to the faulting process
-			errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
+			
+			//errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);		//comment this out per Hartman..Let P3_Switch do the mapping.  
 			processes[currFault.pid].pageTable[fpage].frame = freeFrame;
 			processes[currFault.pid].pageTable[fpage].state = INCORE;
 				
 		}
 		//**************************************************************************************************
 		//cannot find an unused frame
-		if (freeFrame == -1) {
+		else {	//(freeFrame == -1) {
 			
 			P1_P(semClockPos);
 			
