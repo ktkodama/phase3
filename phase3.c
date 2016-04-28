@@ -116,7 +116,8 @@ void    P3_Quit(int pid);
 
 static int findFreeFrame(int, int);
 static int runClockAlgo(int currPID, int) ;
-static void writeOldPage(int, int, int); 
+static void writeOldPage(int, int, int, void*); 
+static void writeNewPage(int, int, int, int, void*); 
 
 //////////////////////////////////////////////////////////// David's
 static int pagerIdTable[P3_MAX_PAGERS];  
@@ -617,7 +618,7 @@ Pager(void* arg)
 			processes[pagerPID].pageTable[fpage].frame = freeFrame;
 			processes[pagerPID].pageTable[fpage].state = INCORE;
 			
-			memset(vmRegion+fpage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
+			memset(vmRegion+fpage*USLOSS_MmuPageSize(), '?', USLOSS_MmuPageSize());
 			
 			//ask LO is this needed?  Unmap this from the Pager process and give mapping to the faulting process
 			errorCode = USLOSS_MmuUnmap(0, fpage);
@@ -653,14 +654,18 @@ Pager(void* arg)
 			//update the page table for the old process and possibly write old page to disk
 			processes[oldPID].pageTable[oldPage].frame = -1;
 			processes[oldPID].pageTable[oldPage].state = ONDISK;
-			writeOldPage(oldPID, oldPage, freeFrame); 
+			writeOldPage(oldPID, oldPage, freeFrame, vmRegion); 
 			
-			
+			//update the page table for the new process 
+			processes[currFault.pid].pageTable[fpage].frame = freeFrame;
+			processes[currFault.pid].pageTable[fpage].state = INCORE;
 						
 			//update frame table here and not in runClockAlgo() 
 			frmTable[freeFrame].page = fpage;
 			frmTable[freeFrame].pid = currFault.pid;
 			frmTable[freeFrame].state = INCORE;
+			
+			
 			
 			//TODO:
 			//check if replacement page is new or on disk
@@ -707,7 +712,7 @@ int P3_Startup(void *arg)
 	
 	sectorsPerBlock = USLOSS_MmuPageSize() / USLOSS_DISK_SECTOR_SIZE;	
 	Sys_DiskSize(diskUnit, &sectorSize, &numSectorPerTrack, &numTracks);
-	USLOSS_Console("disk info: %d %d %d %d\n", diskUnit, sectorSize, numSectorPerTrack, numTracks);	
+	//USLOSS_Console("disk info: %d %d %d %d\n", diskUnit, sectorSize, numSectorPerTrack, numTracks);	
 	numBlocks = numTracks * numSectorPerTrack / sectorsPerBlock;
 	//assert(numBlocks==200);
 	
@@ -788,12 +793,14 @@ int runClockAlgo(int currPID, int pageNum) {
 
 
 */
-void writeOldPage(int currPID, int pageNum, int freeFrame) {
+void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegion) {
 	int returnVal; 
 	int startTrack;	//track number to start writing from
 	int first;	//first sector to be written
 	int assignedBlock; //the disk block assigned to the page to be replaced
 	int accessPtr;
+	int pagerPID;
+	int errorCode;
 	void* buffer;
 	
 	//page does not exist on disk.  Update disk block table, update usedBlocks, write page to disk
@@ -801,12 +808,8 @@ void writeOldPage(int currPID, int pageNum, int freeFrame) {
 		diskBlock[usedBlocks].pid = currPID;
 		processes[currPID].pageTable[pageNum].block = usedBlocks;
 		startTrack = usedBlocks/2;
-		first = usedBlocks % 2;
+		first = (usedBlocks % 2) * 8;
 		usedBlocks++;
-		buffer = malloc(sizeof(USLOSS_MmuPageSize()));
-		returnVal = P2_DiskWrite(diskUnit, startTrack, first, sectorsPerBlock , buffer);
-		assert(returnVal==0);
-		free(buffer);
 	}
 	
 	//otherwise replaced page is on disk.  Check if dirty
@@ -818,17 +821,85 @@ void writeOldPage(int currPID, int pageNum, int freeFrame) {
 			
 		//compute startTrack and first from the block number;
 		startTrack = assignedBlock/2;
-		first = assignedBlock % 2; 
-		
-		buffer = malloc(sizeof(USLOSS_MmuPageSize()));
-		//memcpy(buffer, vmRegion+oldPage*USLOSS_MmuPageSize() , USLOSS_MmuPageSize());
-		returnVal = P2_DiskWrite(diskUnit, startTrack, first , sectorsPerBlock , buffer);
-		assert(returnVal==0);
-		free(buffer);
+		first = assignedBlock % 2 * 8; 
 	}
+	
+	//just return without bothering the Disk Driver
 	else {
-			USLOSS_Console("page is not dirty..no writing to disk\n");
+		USLOSS_Console("page is not dirty and is already on disk..no writing to disk\n");
+		return;
 	}
+	
+	//map the page to the Pager process...Then set mapping otherwise infinite loop
+	pagerPID = P1_GetPID();	
+	processes[pagerPID].pageTable[pageNum].state = INCORE;
+	processes[pagerPID].pageTable[pageNum].frame = freeFrame;
+	errorCode = USLOSS_MmuMap(0, pageNum, freeFrame, USLOSS_MMU_PROT_RW);
+	assert(errorCode==0);
+	
+	//copy to buffer then call disk write
+	buffer = malloc((USLOSS_MmuPageSize()));
+	memcpy(buffer, vmRegion+pageNum*USLOSS_MmuPageSize() , USLOSS_MmuPageSize());
+	returnVal = P2_DiskWrite(diskUnit, startTrack, first , sectorsPerBlock , buffer);
+	assert(returnVal==0);
+	errorCode = USLOSS_MmuUnmap(0, pageNum);
+	assert(errorCode==0);
+	free(buffer);
+	return;
 }	//writeOldPage
+
+/* if this is a brand new page, zero it out.  Otherwise load the page in from disk;
+ *
+ */
+void writeNewPage(int newPID, int newPage, int oldPage, int freeFrame, void* vmRegion) {
+	
+	int returnVal; 
+	int startTrack;	//track number to start writing from
+	int first;	//first sector to be written
+	int assignedBlock; //the disk block assigned to the page to be replaced
+	int accessPtr;
+	int pagePtr;
+	int pagerPID;
+	void* buffer;
+	int errorCode;
+	
+	buffer = malloc((USLOSS_MmuPageSize()));
+	//brand new page
+	if (processes[newPID].pageTable[newPage].block == -1 ) {
+		
+		//assign frame to pager so it can zero the frame
+		pagerPID = P1_GetPID();		
+		processes[pagerPID].pageTable[newPage].frame = freeFrame;
+		processes[pagerPID].pageTable[newPage].state = INCORE;
+		
+		//unmap old page
+		errorCode = USLOSS_MmuUnmap(TAG, oldPage);
+		assert(errorCode == USLOSS_MMU_OK);
+		
+		//map new page
+		vmRegion=USLOSS_MmuRegion(&pagePtr);
+		errorCode = USLOSS_MmuMap(0, newPage, freeFrame, USLOSS_MMU_PROT_RW);
+		assert(errorCode == USLOSS_MMU_OK);
+		
+		//zero out page then unmap it and update page tables	
+		memset(vmRegion+newPage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
+		errorCode = USLOSS_MmuUnmap(TAG, oldPage);
+		assert(errorCode == USLOSS_MMU_OK);		
+		
+		processes[pagerPID].pageTable[newPage].frame = -1;
+		processes[pagerPID].pageTable[newPage].state = UNUSED;
+		
+		processes[newPID].pageTable[newPage].frame = freeFrame;
+		processes[newPID].pageTable[newPage].state = INCORE;
+					
+	}
+	//page is on disk so load into memory
+	else {
+		
+	}
+	
+	
+	return;
+}	//writeNewPage
 
 
