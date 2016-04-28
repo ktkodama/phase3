@@ -47,15 +47,6 @@ typedef struct Process {
     /* Add more stuff here if necessary. */
 } Process;
  
-static Process  processes[P1_MAXPROC];
-
-static int  numPages = 0;
-static int  numFrames = 0;
-static int clockPos = 0; 	//the position of the clock hand;
-
-//temporary
-//static int nextPage = 0;
- 
 /*
  * Information about page faults.
  */
@@ -73,7 +64,15 @@ typedef struct Frame {
 
 } Frame;
 
+typedef struct Block {
+	int 	pid;
+	
+} Block;
+
+
+
 static Frame *frmTable;
+static Block *diskBlock;
 
 static void *vmRegion = NULL;
  
@@ -81,28 +80,43 @@ P3_VmStats  P3_vmStats;
  
 static int pagerMbox = -1;
 
-static void CheckPid(int);
-static void CheckMode(void);
-static void FaultHandler(int type, void *arg);
-static int Pager(void *arg);
-//static void TestMMUDriver(void);
-//static void TestRecMail(void);
-static int findFreeFrame(int, int);
-static int runClockAlgo(int currPID, int) ;
- 
-void    P3_Fork(int pid);
-void    P3_Switch(int old, int new);
-void    P3_Quit(int pid);
  
 int p4_pid;
 int p4_return_pid;
 int* p4_pid_ptr = &p4_pid;
+int sectorsPerBlock;  //USLOSS_MmuPageSize() / USLOSS_DISK_SECTOR_SIZE;
+
+static Process  processes[P1_MAXPROC];
+
+static int  numPages = 0;
+static int  numFrames = 0;
+static int clockPos = 0; 	//the position of the clock hand;
+static int diskUnit = 1;
+static int usedBlocks = 0;
+
+int sectorSize;
+int numSectorPerTrack;
+int numTracks;	//total tracks on the disk
+int numBlocks;	//total disk blocks that store a individual frame
+
 
 P1_Semaphore semFreeFrame;
 P1_Semaphore semProcTable;
 P1_Semaphore semMutex;
 P1_Semaphore semP3_VmStats;
 P1_Semaphore semClockPos;
+
+static void CheckPid(int);
+static void CheckMode(void);
+static void FaultHandler(int type, void *arg);
+static int Pager(void *arg);
+void    P3_Fork(int pid);
+void    P3_Switch(int old, int new);
+void    P3_Quit(int pid);
+
+static int findFreeFrame(int, int);
+static int runClockAlgo(int currPID, int) ;
+static void writeOldPage(int, int, int); 
 
 //////////////////////////////////////////////////////////// David's
 static int pagerIdTable[P3_MAX_PAGERS];  
@@ -186,6 +200,10 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	memset(frmTable, 0, frames * sizeof(Frame));
 	
 	P1_V(semFreeFrame);
+	
+	//create diskBlock table 
+	diskBlock = (Block *) malloc(numBlocks * sizeof(Block));
+	memset(diskBlock, 0, numBlocks * sizeof(Block));
 	
     /*
      * Create the page fault mailbox and fork the pagers here.
@@ -522,15 +540,14 @@ Pager(void* arg)
 	
 	int oldPID;
 	int oldPage;
-	int accessPtr;
+	//int accessPtr;
 	//int i;
 	
-	int unit = 1;
-	int track = 0;
-	int first = 0;
-	int sectors = USLOSS_MmuPageSize() / USLOSS_DISK_SECTOR_SIZE;	
-	void *buffer;
-	int returnVal;
+	//int track = 0;
+	//int first = 0;
+			
+	//void *buffer;
+	//int returnVal;
 	
 	//int blnReplacePage = 1;
 
@@ -617,7 +634,7 @@ Pager(void* arg)
 				
 		}
 		//**************************************************************************************************
-		//cannot find an unused frame
+		//cannot find an unused frame.  so replace an existing page
 		else {	//(freeFrame == -1) {
 			
 			P1_P(semClockPos);
@@ -633,20 +650,12 @@ Pager(void* arg)
 			oldPID = frmTable[freeFrame].pid;
 			USLOSS_Console("oldPage: %d oldPID: %d", oldPage, oldPID);
 			
-			//update the page tables for the old process and the new processes 
+			//update the page table for the old process and possibly write old page to disk
 			processes[oldPID].pageTable[oldPage].frame = -1;
 			processes[oldPID].pageTable[oldPage].state = ONDISK;
-			//TODO:
-			//processes[oldPID].pageTable[oldPage].block =
+			writeOldPage(oldPID, oldPage, freeFrame); 
 			
-			//check if the page to be replaced is dirty 
-			returnVal = USLOSS_MmuGetAccess(freeFrame, &accessPtr);
-			if ( ((accessPtr) & (1 << 1))  == 0 )  {  
-				buffer = malloc(sizeof(USLOSS_MmuPageSize()));
-				memcpy(buffer, vmRegion+oldPage*USLOSS_MmuPageSize() , USLOSS_MmuPageSize());
-				returnVal = P2_DiskWrite(unit, track, first , sectors , buffer);
-				assert(returnVal==0);
-			}
+			
 						
 			//update frame table here and not in runClockAlgo() 
 			frmTable[freeFrame].page = fpage;
@@ -696,13 +705,11 @@ int P3_Startup(void *arg)
     int rc;
 	int child;
 	
-	int unit = 1;
-	int sectorSize;
-	int numSectorPerTrack;
-	int numTracks;
-		
-	Sys_DiskSize(unit, &sectorSize, &numSectorPerTrack, &numTracks);
-	USLOSS_Console("disk info: %d %d %d %d\n", unit, sectorSize, numSectorPerTrack, numTracks);	
+	sectorsPerBlock = USLOSS_MmuPageSize() / USLOSS_DISK_SECTOR_SIZE;	
+	Sys_DiskSize(diskUnit, &sectorSize, &numSectorPerTrack, &numTracks);
+	USLOSS_Console("disk info: %d %d %d %d\n", diskUnit, sectorSize, numSectorPerTrack, numTracks);	
+	numBlocks = numTracks * numSectorPerTrack / sectorsPerBlock;
+	//assert(numBlocks==200);
 	
 	p4_return_pid = Sys_Spawn("P4_Startup", P4_Startup, NULL,  4 * USLOSS_MIN_STACK, 3, p4_pid_ptr);
 	rc = Sys_Wait(&p4_return_pid, &child);
@@ -774,11 +781,54 @@ int runClockAlgo(int currPID, int pageNum) {
 	}
 */	
 	return freeFrame;
-	
-	
-	
-	//USLOSS_Console("clock algo failed\n");
-	//USLOSS_Halt(1);
-
 }
+
+/*  Check if the page to be replaced is on disk and if so, check if the page in memory is dirty
+
+
+
+*/
+void writeOldPage(int currPID, int pageNum, int freeFrame) {
+	int returnVal; 
+	int startTrack;	//track number to start writing from
+	int first;	//first sector to be written
+	int assignedBlock; //the disk block assigned to the page to be replaced
+	int accessPtr;
+	void* buffer;
+	
+	//page does not exist on disk.  Update disk block table, update usedBlocks, write page to disk
+	if ( processes[currPID].pageTable[pageNum].block == -1) {
+		diskBlock[usedBlocks].pid = currPID;
+		processes[currPID].pageTable[pageNum].block = usedBlocks;
+		startTrack = usedBlocks/2;
+		first = usedBlocks % 2;
+		usedBlocks++;
+		buffer = malloc(sizeof(USLOSS_MmuPageSize()));
+		returnVal = P2_DiskWrite(diskUnit, startTrack, first, sectorsPerBlock , buffer);
+		assert(returnVal==0);
+		free(buffer);
+	}
+	
+	//otherwise replaced page is on disk.  Check if dirty
+	else if ( ((accessPtr) & (1 << 1))  == 0 ) {
+		returnVal = USLOSS_MmuGetAccess(freeFrame, &accessPtr);
+		assert(returnVal==0);
+		
+		assignedBlock = processes[currPID].pageTable[pageNum].block;
+			
+		//compute startTrack and first from the block number;
+		startTrack = assignedBlock/2;
+		first = assignedBlock % 2; 
+		
+		buffer = malloc(sizeof(USLOSS_MmuPageSize()));
+		//memcpy(buffer, vmRegion+oldPage*USLOSS_MmuPageSize() , USLOSS_MmuPageSize());
+		returnVal = P2_DiskWrite(diskUnit, startTrack, first , sectorsPerBlock , buffer);
+		assert(returnVal==0);
+		free(buffer);
+	}
+	else {
+			USLOSS_Console("page is not dirty..no writing to disk\n");
+	}
+}	//writeOldPage
+
 
