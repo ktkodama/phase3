@@ -117,7 +117,7 @@ void    P3_Quit(int pid);
 static int findFreeFrame(int, int);
 static int runClockAlgo(int currPID, int) ;
 static void writeOldPage(int, int, int, void*); 
-static void writeNewPage(int, int, int, int, void*); 
+static void writeNewPage(int, int, int, void*); 
 
 //////////////////////////////////////////////////////////// David's
 static int pagerIdTable[P3_MAX_PAGERS];  
@@ -371,6 +371,7 @@ P3_Quit(pid)
 				processes[pid].pageTable[i].frame = -1;
 			
 				P1_P(semP3_VmStats);
+				//if (P3_vmStats.freeFrames <= frames)
 				P3_vmStats.freeFrames++;
 				P1_V(semP3_VmStats);
 			
@@ -659,6 +660,7 @@ Pager(void* arg)
 			//update the page table for the new process 
 			processes[currFault.pid].pageTable[fpage].frame = freeFrame;
 			processes[currFault.pid].pageTable[fpage].state = INCORE;
+			writeNewPage(currFault.pid, fpage, freeFrame, vmRegion);
 						
 			//update frame table here and not in runClockAlgo() 
 			frmTable[freeFrame].page = fpage;
@@ -821,7 +823,7 @@ void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegion) {
 			
 		//compute startTrack and first from the block number;
 		startTrack = assignedBlock/2;
-		first = assignedBlock % 2 * 8; 
+		first = (assignedBlock % 2) * 8; 
 	}
 	
 	//just return without bothering the Disk Driver
@@ -834,6 +836,8 @@ void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegion) {
 	pagerPID = P1_GetPID();	
 	processes[pagerPID].pageTable[pageNum].state = INCORE;
 	processes[pagerPID].pageTable[pageNum].frame = freeFrame;
+	//errorCode = USLOSS_MmuUnmap(0, pageNum);
+	//assert(errorCode==0);
 	errorCode = USLOSS_MmuMap(0, pageNum, freeFrame, USLOSS_MMU_PROT_RW);
 	assert(errorCode==0);
 	
@@ -851,54 +855,69 @@ void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegion) {
 /* if this is a brand new page, zero it out.  Otherwise load the page in from disk;
  *
  */
-void writeNewPage(int newPID, int newPage, int oldPage, int freeFrame, void* vmRegion) {
+void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegion) {
 	
 	int returnVal; 
 	int startTrack;	//track number to start writing from
 	int first;	//first sector to be written
 	int assignedBlock; //the disk block assigned to the page to be replaced
-	int accessPtr;
+//	int accessPtr;
 	int pagePtr;
 	int pagerPID;
+	int framePtr;
+	int protPtr;
 	void* buffer;
 	int errorCode;
 	
 	buffer = malloc((USLOSS_MmuPageSize()));
+	pagerPID = P1_GetPID();	
+	
+	//assign frame to pager so it can zero the frame
+			
+	processes[pagerPID].pageTable[newPage].frame = freeFrame;
+	processes[pagerPID].pageTable[newPage].state = INCORE;
+	
+	//if a mapping for this page exists, unmap it
+	returnVal = USLOSS_MmuGetMap(TAG, newPage, &framePtr, &protPtr );
+	if (returnVal != USLOSS_MMU_ERR_NOMAP) {
+		errorCode = USLOSS_MmuUnmap(TAG, newPage);
+		assert(errorCode == USLOSS_MMU_OK);	
+	}
+		
+	//map new page
+	vmRegion=USLOSS_MmuRegion(&pagePtr);
+	errorCode = USLOSS_MmuMap(0, newPage, freeFrame, USLOSS_MMU_PROT_RW);
+	assert(errorCode == USLOSS_MMU_OK);
+	
+	
 	//brand new page
 	if (processes[newPID].pageTable[newPage].block == -1 ) {
-		
-		//assign frame to pager so it can zero the frame
-		pagerPID = P1_GetPID();		
-		processes[pagerPID].pageTable[newPage].frame = freeFrame;
-		processes[pagerPID].pageTable[newPage].state = INCORE;
-		
-		//unmap old page
-		errorCode = USLOSS_MmuUnmap(TAG, oldPage);
-		assert(errorCode == USLOSS_MMU_OK);
-		
-		//map new page
-		vmRegion=USLOSS_MmuRegion(&pagePtr);
-		errorCode = USLOSS_MmuMap(0, newPage, freeFrame, USLOSS_MMU_PROT_RW);
-		assert(errorCode == USLOSS_MMU_OK);
-		
-		//zero out page then unmap it and update page tables	
-		memset(vmRegion+newPage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
-		errorCode = USLOSS_MmuUnmap(TAG, oldPage);
-		assert(errorCode == USLOSS_MMU_OK);		
-		
-		processes[pagerPID].pageTable[newPage].frame = -1;
-		processes[pagerPID].pageTable[newPage].state = UNUSED;
-		
-		processes[newPID].pageTable[newPage].frame = freeFrame;
-		processes[newPID].pageTable[newPage].state = INCORE;
-					
+		memset(vmRegion+newPage*USLOSS_MmuPageSize(), '?', USLOSS_MmuPageSize());
+		free(buffer);	
 	}
+
 	//page is on disk so load into memory
 	else {
 		
+		assignedBlock = processes[newPID].pageTable[newPage].block;
+		startTrack = assignedBlock/2;
+		first = (assignedBlock % 2) * 8; 	//always 0 or 8 
+		
+		returnVal = P2_DiskRead(diskUnit, startTrack, first , sectorsPerBlock , buffer);
+		memcpy(vmRegion+newPage*USLOSS_MmuPageSize() , buffer, USLOSS_MmuPageSize());
+		USLOSS_Console("should not get to else\n");
 	}
 	
+	//unmap the pager from mmu and then update page tables
+	errorCode = USLOSS_MmuUnmap(TAG, newPage);
+	assert(errorCode == USLOSS_MMU_OK);		
 	
+	processes[pagerPID].pageTable[newPage].frame = -1;
+	processes[pagerPID].pageTable[newPage].state = UNUSED;
+	
+	processes[newPID].pageTable[newPage].frame = freeFrame;
+	processes[newPID].pageTable[newPage].state = INCORE;
+		
 	return;
 }	//writeNewPage
 
