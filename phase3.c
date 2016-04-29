@@ -660,30 +660,34 @@ Pager(void* arg)
 		//**************************************************************************************************
 		if (freeFrame != -1)  {
 			vmRegion=USLOSS_MmuRegion(&pagePtr);
-			pagerPID = P1_GetPID();		//ask LO is this needed?
+			pagerPID = P1_GetPID();		
 			
-			//ask LO is this needed?  Give mapping to Pager and update Pagers pageTable
+			//Give mapping to Pager and update Pagers pageTable
 			errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);
 			assert(errorCode == USLOSS_MMU_OK);
 			processes[pagerPID].pageTable[fpage].frame = freeFrame;
 			processes[pagerPID].pageTable[fpage].state = INCORE;
 			
-			memset(vmRegion+fpage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
-			
-			//ask LO is this needed?  Unmap this from the Pager process and give mapping to the faulting process
-			errorCode = USLOSS_MmuUnmap(0, fpage);
-			processes[pagerPID].pageTable[fpage].frame = -1;
-			processes[pagerPID].pageTable[fpage].state = UNUSED;
-			//assert(errorCode == USLOSS_MMU_OK);
-					
-			
-			//assign mapping to the faulting process
-			
-			//errorCode = USLOSS_MmuMap(0, fpage, freeFrame, USLOSS_MMU_PROT_RW);		//comment this out per Hartman..Let P3_Switch do the mapping.  
-			processes[currFault.pid].pageTable[fpage].frame = freeFrame;
-			processes[currFault.pid].pageTable[fpage].state = INCORE;
+			//check if the page exists on disk, if not zero out the page
+			if (processes[currFault.pid].pageTable[fpage].block == -1) {
+				memset(vmRegion+fpage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
+				errorCode = USLOSS_MmuUnmap(0, fpage);	
+				assert(errorCode == USLOSS_MMU_OK);
 				
-		}
+				//Unmap this from the Pager process and give mapping to the faulting process
+				processes[pagerPID].pageTable[fpage].frame = -1;
+				processes[pagerPID].pageTable[fpage].state = UNUSED;
+				processes[currFault.pid].pageTable[fpage].frame = freeFrame;
+				processes[currFault.pid].pageTable[fpage].state = INCORE;
+				
+			}
+			
+			//page is on disk
+			else {
+				writeNewPage(currFault.pid, fpage, freeFrame, vmRegion);  //the mapping for the faulting process is handled
+																		 // in writeNewPage
+			}
+		} //if (freeFrame != -1)
 		//**************************************************************************************************
 		//cannot find an unused frame.  so replace an existing page
 		else {	//(freeFrame == -1) {
