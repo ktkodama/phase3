@@ -745,7 +745,7 @@ Pager(void* arg)
 			
 			
 			//check if process tied to replaced page has quit if so update the page table to not point to
-			//any blocks
+/*			//any blocks
 			if (P1_GetState(oldPID) == 3) {
 				for (i=0;i<numPages;i++) {
 					//processes[oldPID].pageTable[i].block = -1;
@@ -761,6 +761,7 @@ Pager(void* arg)
 					diskBlock[i].pid = -1;
 				}
 			}
+	*/		
 		}	//if freeFrame != -1
 		//**************************************************************************************************************8
 				
@@ -907,11 +908,11 @@ void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegion) {
 		startTrack = currBlock/2;
 		first = (currBlock % 2) * 8;
 		
-		P1_P(semP3_VmStats);
+		//P1_P(semP3_VmStats);
 		
-		P3_vmStats.freeBlocks--;
+		//P3_vmStats.freeBlocks--;
 		
-		P1_V(semP3_VmStats);
+		//P1_V(semP3_VmStats);
 		
 		//usedBlocks++;
 	}
@@ -967,6 +968,11 @@ void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegion) {
 	
 	processes[pagerPID].pageTable[pageNum].state = UNUSED;
 	processes[pagerPID].pageTable[pageNum].frame = -1;
+	
+	P1_P(semP3_VmStats);
+	P3_vmStats.pageOuts++;
+	P3_vmStats.freeBlocks--;
+	P1_V(semP3_VmStats);
 	
 	free(buffer);
 	return;
@@ -1030,6 +1036,12 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegion) {
 		assert(returnVal==0);
 		memcpy(vmRegion+newPage*USLOSS_MmuPageSize() , buffer, USLOSS_MmuPageSize());
 		USLOSS_Console("loading page %d into RAM\n", newPage);
+		
+		
+		P1_P(semP3_VmStats);
+		P3_vmStats.pageIns++;
+		P1_V(semP3_VmStats);
+		
 	}
 	
 	//unmap the pager from mmu and then update page tables
