@@ -70,8 +70,6 @@ typedef struct Block {
 	
 } Block;
 
-
-
 static Frame *frmTable;
 static Block *diskBlock;
 
@@ -101,13 +99,13 @@ int numTracks;	//total tracks on the disk
 int numBlocks;	//total disk blocks that store a individual frame
 
 
-P1_Semaphore semFreeFrame;
-P1_Semaphore semPageTable;
-P1_Semaphore semMutex;
+P1_Semaphore semFreeFrame;	//protect frame table
+P1_Semaphore semPageTable;	//protect entire page table
+P1_Semaphore semMutex;	//global
 P1_Semaphore semP3_VmStats;
-P1_Semaphore semClockPos;
-P1_Semaphore semDiskBlock;
-P1_Semaphore semDiskIO;
+P1_Semaphore semClockPos;	//protect runClockAlgo method
+P1_Semaphore semDiskBlock;	//protect diskBlock table
+P1_Semaphore semDiskIO;		//protect diskIO
 
 
 static void CheckPid(int);
@@ -150,20 +148,15 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
     int     i;
     int     tmp;
 	
-	//void	*arg;
-	
-	
 	semFreeFrame = P1_SemCreate(1);
 	semPageTable = P1_SemCreate(1);
 	semMutex = P1_SemCreate(1);
 	semP3_VmStats = P1_SemCreate(1);
 	semClockPos = P1_SemCreate(1);
-	semDiskBlock = P1_SemCreate(1);
+	semDiskBlock = P1_SemCreate(1);	
 	semDiskIO = P1_SemCreate(1);
 	
- ////
     CheckMode();
-	
 	
 	//error checking prior to MMU INIT
 	if (mappings <= 0  || pages <= 0 || frames <= 0 ) {
@@ -172,7 +165,6 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	if (mappings != pages) {
 		return -1;
 	}
-	
 	//////******************************************************************************
 	
 	//moving this ***BEFORE*** the forking of the pager to try to solve glibc error
@@ -180,6 +172,9 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
     P3_vmStats.pages = pages;
     P3_vmStats.frames = frames;
 	P3_vmStats.freeFrames = frames;
+	P3_vmStats.blocks = numBlocks;
+	P3_vmStats.freeBlocks = numBlocks;
+	//assert(P3_vmStats.freeBlocks==200);
     numPages = pages;
     numFrames = frames;
 	//////******************************************************************************	
@@ -241,9 +236,6 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	} 
 	
 	////////////////////////////////////////////////////////////Addition 
-	
-	
-      
     
     return 0;
 }
@@ -398,25 +390,40 @@ P3_Quit(pid)
 				
 				USLOSS_MmuUnmap(TAG,i);
 				
+				P1_P(semPageTable);
+				
 				processes[pid].pageTable[i].frame = -1;
 				processes[pid].pageTable[i].frame = UNUSED;
 				processes[pid].pageTable[i].block = -1;
+				
+				P1_V(semPageTable);
 			
 				P1_P(semP3_VmStats);
-				//if (P3_vmStats.freeFrames <= frames)
-				P3_vmStats.freeFrames++;
+				//if (P3_vmStats.freeFrames <= frames) {
+					P3_vmStats.freeFrames++;	
+				//}
+				
 				P1_V(semP3_VmStats);
 			
 			}
 			P1_V(semFreeFrame);
 		}	
 		
+		P1_P(diskBlock);
+		
 		for (i=0;i<numBlocks;i++) {
+			
 			if (diskBlock[i].pid == pid) {
 				diskBlock[i].pid = -1;		
+				
+				P1_P(semP3_VmStats);
+				P3_vmStats.freeBlocks++;			
+				P1_V(semP3_VmStats);
+				
 			}
 		} 
-	
+		
+		P1_V(diskBlock);
  
     /* Clean up the page table. */
 	
@@ -754,10 +761,6 @@ Pager(void* arg)
 					diskBlock[i].pid = -1;
 				}
 			}
-			
-			
-			
-				
 		}	//if freeFrame != -1
 		//**************************************************************************************************************8
 				
