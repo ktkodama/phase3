@@ -240,7 +240,6 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	P1_V(semFreeFrame);
 	
 	//create diskBlock table 
-	
 	P1_P(diskBlock);
 	
 	diskBlock = (Block *) malloc(numBlocks * sizeof(Block));
@@ -572,18 +571,22 @@ FaultHandler(type, arg)
 	P1_P(semP3_VmStats);
 		
     P3_vmStats.faults++;
-	
-	
-    
+	    
 	P1_V(semP3_VmStats);
 	
 	fault.pid = P1_GetPID();
     fault.addr = arg;
     fault.mbox = P2_MboxCreate(1, 0);
 	
-	//if (P3_vmStats.faults==5) {
+	if (P3_vmStats.faults==19) {
 		//assert(fault.pid == 99);
-	//}
+		char* diskBuf = malloc(USLOSS_MmuPageSize());
+		P1_P(semDiskIO);
+			int returnVal = P2_DiskRead(1, 1, 8 , 8 , diskBuf);
+			assert(returnVal==0);
+			USLOSS_Console("diskBuf is: ", diskBuf);
+		P1_V(semDiskIO);
+	}
 	
     //assert(fault.mbox >= 0);
     size = sizeof(fault);
@@ -631,9 +634,7 @@ Pager(void* arg)
 	
 	int oldPID;
 	int oldPage;
-	
-	
-	
+		
 	Fault currFault;
 	Fault* p4buffer;
 	int fpage;
@@ -844,13 +845,13 @@ Pager(void* arg)
 		}	//if freeFrame != -1
 		//**************************************************************************************************************8
 		
+		
+		//size = 0;		///this is a big bug
+		sendStatus = P2_MboxSend(currFault.mbox, NULL, &nosize);
 		//mark frame as not busy
 		P1_P(semFreeFrame);
 			frmTable[freeFrame].state = INCORE;
 		P1_V(semFreeFrame);
-		//size = 0;		///this is a big bug
-		sendStatus = P2_MboxSend(currFault.mbox, NULL, &nosize);
-		
 		
     }	//end of while (1)
     /* Never gets here. */
