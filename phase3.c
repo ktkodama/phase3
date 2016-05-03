@@ -786,7 +786,7 @@ Pager(void* arg)
 		//**************************************************************************************************
 		//cannot find an unused frame.  so replace an existing page
 		else {	//(freeFrame == -1) {
-			
+			vmRegionPager=USLOSS_MmuRegion(&pagePtr);
 			P1_P(semClockPos);
 			P1_P(semFreeFrame);
 			
@@ -1032,6 +1032,7 @@ void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegionOld) {
 	//copy to buffer then call disk write
 	buffer = malloc((USLOSS_MmuPageSize()));
 	memcpy(buffer, vmRegionOld+pageNum*USLOSS_MmuPageSize() , USLOSS_MmuPageSize());
+	USLOSS_Console("writing %s to startttrack %d sector %d\n", buffer, startTrack, first);
 	returnVal = P2_DiskWrite(diskUnit, startTrack, first , sectorsPerBlock , buffer);
 	assert(returnVal==0);
 	errorCode = USLOSS_MmuUnmap(0, pageNum);
@@ -1110,8 +1111,8 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegionNew) {
 		returnVal = P2_DiskRead(diskUnit, startTrack, first , sectorsPerBlock , buffer);
 		assert(returnVal==0);
 		memcpy(vmRegionNew+newPage*USLOSS_MmuPageSize() , buffer, USLOSS_MmuPageSize());
+		USLOSS_Console("reading %s  from  assignedBlock %d \n", buffer, assignedBlock);
 		USLOSS_Console("loading page %d from block %d for process %d, into RAM at freeFRAME %d \n", newPage, assignedBlock, newPID, freeFrame);
-				
 		P1_P(semP3_VmStats);
 		P3_vmStats.pageIns++;
 		P1_V(semP3_VmStats);
@@ -1150,3 +1151,4 @@ int findDiskBlock(int oldPID) {
 }
 
 
+//
