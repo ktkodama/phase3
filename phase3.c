@@ -25,6 +25,7 @@
 #define UNUSED  0
 #define INCORE  1
 #define ONDISK  2
+#define FRAMEBUSY 3
 /* You'll probably want more states */
 
 /*kill message*/
@@ -162,13 +163,13 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
     int     i;
     int     tmp;
 	
-	semFreeFrame = P1_SemCreate(1);
+	semFreeFrame = P1_SemCreate(1);		//protect frame tables
 	semPageTable = P1_SemCreate(1);
 	semMutex = P1_SemCreate(1);
 	semP3_VmStats = P1_SemCreate(1);
 	semClockPos = P1_SemCreate(1);
-	semDiskBlock = P1_SemCreate(1);	
-	semDiskIO = P1_SemCreate(1);
+	semDiskBlock = P1_SemCreate(1);		//semaphor for disk block table
+	semDiskIO = P1_SemCreate(1);		//semaphor for disk IO
 
 	
 	semPager0 = P1_SemCreate(1);
@@ -636,18 +637,7 @@ Pager(void* arg)
 	Fault currFault;
 	Fault* p4buffer;
 	int fpage;
-	//int accessPtr;
-	//int i;
-	
-	//int track = 0;
-	//int first = 0;
-			
-	//void *buffer;
-	//int returnVal;
-	
-	//int blnReplacePage = 1;
-
-	
+		
 	while(1) {
         /* Wait for fault to occur (receive from pagerMbox) */
         /* Find a free frame */
@@ -718,7 +708,6 @@ Pager(void* arg)
 			P1_Quit(quitStatus);
 			
 		}
-		//
 		//if still alive, read in the Fault message
 		currFault.pid = p4buffer->pid;
 		currFault.addr = p4buffer->addr;
@@ -743,15 +732,13 @@ Pager(void* arg)
 		USLOSS_Console("currFault.pid: %d\n", currFault.pid);
 		USLOSS_Console("currFault.addr: %x\n", currFault.addr);
 		
-		
-		P1_P(semClockPos);
 		P1_P(semFreeFrame);
 		
-		freeFrame = findFreeFrame(currFault.pid, fpage);
-		USLOSS_Console("frree frame: %d\n", freeFrame);
+			freeFrame = findFreeFrame(currFault.pid, fpage);
+			USLOSS_Console("frree frame: %d\n", freeFrame);
 		
 		P1_V(semFreeFrame);
-		P1_V(semClockPos);
+		
 		
 		//phase 3a logic..An unused frame exists
 		//**************************************************************************************************
@@ -767,6 +754,7 @@ Pager(void* arg)
 				processes[pagerPID].pageTable[fpage].frame = freeFrame;
 				processes[pagerPID].pageTable[fpage].state = INCORE;
 			P1_V(processes[pagerPID].semPTE);
+			
 			//check if the page exists on disk, if not zero out the page
 			if (processes[currFault.pid].pageTable[fpage].block == -1) {
 				P1_P(processes[pagerPID].semPTE);
@@ -776,10 +764,11 @@ Pager(void* arg)
 				assert(errorCode == USLOSS_MMU_OK);
 				
 				//Unmap this from the Pager process and give mapping to the faulting process
-							
-					processes[pagerPID].pageTable[fpage].frame = -1;
-					processes[pagerPID].pageTable[fpage].state = UNUSED;
+				processes[pagerPID].pageTable[fpage].frame = -1;
+				processes[pagerPID].pageTable[fpage].state = UNUSED;
+				
 				P1_V(processes[pagerPID].semPTE);			
+				
 				P1_P(processes[currFault.pid].semPTE);
 					processes[currFault.pid].pageTable[fpage].frame = freeFrame;
 					processes[currFault.pid].pageTable[fpage].state = INCORE;
@@ -799,16 +788,15 @@ Pager(void* arg)
 			
 			P1_P(semClockPos);
 			P1_P(semFreeFrame);
+			
 			//find a frame to use
 			freeFrame = runClockAlgo(currFault.pid,fpage);
 			USLOSS_Console("freeFrame after return from clockAlgo %d\n", freeFrame);
-					
+			
 			P1_V(semClockPos);
 			
+			
 			//find old page associated with frame
-			
-			
-			
 			oldPage = frmTable[freeFrame].page;
 			oldPID = frmTable[freeFrame].pid;
 			USLOSS_Console("oldPage: %d oldPID: %d\n", oldPage, oldPID);
@@ -816,7 +804,7 @@ Pager(void* arg)
 			//update frame table here and not in runClockAlgo() 
 			frmTable[freeFrame].page = fpage;
 			frmTable[freeFrame].pid = currFault.pid;
-			frmTable[freeFrame].state = INCORE;
+			frmTable[freeFrame].state = FRAMEBUSY;
 				
 			P1_V(semFreeFrame);
 			
@@ -828,20 +816,12 @@ Pager(void* arg)
 			
 			P1_V(processes[oldPID].semPTE);
 			
-			P1_P(semClockPos);
 			P1_P(semDiskIO);
 			
 			writeOldPage(oldPID, oldPage, freeFrame, vmRegionPager); 
-			
-			//update the page table for the new process 
-			//processes[currFault.pid].pageTable[fpage].frame = freeFrame;
-			//processes[currFault.pid].pageTable[fpage].state = INCORE;
 			writeNewPage(currFault.pid, fpage, freeFrame, vmRegionPager);
 			
 			P1_V(semDiskIO);
-			P1_V(semClockPos);
-			
-			
 			
 			//check if process tied to replaced page has quit if so update the page table to not point to
 /*			//any blocks
@@ -863,7 +843,11 @@ Pager(void* arg)
 	*/		
 		}	//if freeFrame != -1
 		//**************************************************************************************************************8
-				
+		
+		//mark frame as not busy
+		P1_P(semFreeFrame);
+			frmTable[freeFrame].state = INCORE;
+		P1_V(semFreeFrame);
 		//size = 0;		///this is a big bug
 		sendStatus = P2_MboxSend(currFault.mbox, NULL, &nosize);
 		
@@ -916,7 +900,7 @@ int findFreeFrame(int currPID, int pageNum) {
 	
 	for(i=0;i<numFrames;i++) {
 		if (frmTable[i].state == UNUSED) {
-			frmTable[i].state = INCORE;
+			frmTable[i].state = FRAMEBUSY;		//make the frame busy to stop another process from reading it
 			frmTable[i].pid = currPID;
 			frmTable[i].page = pageNum;
 			P1_P(semP3_VmStats);
@@ -940,15 +924,10 @@ int runClockAlgo(int currPID, int pageNum) {
 		assert(returnVal==0);
 		
 		//USLOSS_Console("accessPtr: %d\n", accessPtr);
-		if ( ((accessPtr) & (1 << 0))  == 0 )  {  //USLOSS_MMU_REF not set accessPtr & (1 << 0)
-			//frmTable[clockPos].state = INCORE;
-			//frmTable[clockPos].pid = currPID;
-			//frmTable[clockPos].page = pageNum;
-			//P3_vmStats.freeFrames--;
+		if ( ((accessPtr) & (1 << 0))  == 0 && frmTable[clockPos].state != FRAMEBUSY)  {  //USLOSS_MMU_REF not set accessPtr & (1 << 0)
 			//USLOSS_Console("free frame from clock algo: %d\n", clockPos);
 			freeFrame = clockPos;
 			blnFound = 1;
-			//clockPos++;		//advance clockhand to next frame
 			if (clockPos == numFrames) {	//set clock hand back to zero
 				clockPos = 0;
 			}
@@ -963,7 +942,7 @@ int runClockAlgo(int currPID, int pageNum) {
 				clockPos = 0;
 			}
 		}
-	}	//for
+	}	//for/
 	
 	return freeFrame;
 }
@@ -999,11 +978,12 @@ void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegionOld) {
 		
 		P1_P(semDiskBlock);
 		
-		currBlock = findDiskBlock(currPID);
-		USLOSS_Console("new disk block: %d\n", currBlock);
-		diskBlock[currBlock].pid = currPID;
+			currBlock = findDiskBlock(currPID);
+			USLOSS_Console("new disk block: %d\n", currBlock);
+			diskBlock[currBlock].pid = currPID;
 		
 		P1_V(semDiskBlock);
+		
 		P1_P(processes[currPID].semPTE);
 			processes[currPID].pageTable[pageNum].block = currBlock;
 		P1_V(processes[currPID].semPTE);
@@ -1082,7 +1062,6 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegionNew) {
 	int startTrack;	//track number to start writing from
 	int first;	//first sector to be written
 	int assignedBlock; //the disk block assigned to the page to be replaced
-//	int accessPtr;
 	int pagePtr;
 	int pagerPID;
 	int framePtr;
@@ -1094,7 +1073,6 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegionNew) {
 	pagerPID = P1_GetPID();	
 	
 	//assign frame to pager so it can zero the frame
-	
 	P1_P(processes[pagerPID].semPTE);
 		processes[pagerPID].pageTable[newPage].frame = freeFrame;
 		processes[pagerPID].pageTable[newPage].state = INCORE;
@@ -1115,7 +1093,6 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegionNew) {
 	
 	
 	//brand new page
-	
 	if (processes[newPID].pageTable[newPage].block == -1 ) {
 		memset(vmRegionNew+newPage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
 		USLOSS_Console("brand new page %d loaded for process %d into RAM at freeFRAME %d\n", newPage, newPID, freeFrame);
@@ -1124,7 +1101,6 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegionNew) {
 
 	//page is on disk so load into memory
 	else {
-		//P1_P(semPager0);
 		assignedBlock = processes[newPID].pageTable[newPage].block;
 		//USLOSS_Console("assignedBlock from disk: %d\n", assignedBlock);
 		startTrack = assignedBlock/2;
@@ -1134,8 +1110,7 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegionNew) {
 		assert(returnVal==0);
 		memcpy(vmRegionNew+newPage*USLOSS_MmuPageSize() , buffer, USLOSS_MmuPageSize());
 		USLOSS_Console("loading page %d from block %d for process %d, into RAM at freeFRAME %d \n", newPage, assignedBlock, newPID, freeFrame);
-		//P1_V(semPager0);
-		
+				
 		P1_P(semP3_VmStats);
 		P3_vmStats.pageIns++;
 		P1_V(semP3_VmStats);
