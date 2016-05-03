@@ -109,6 +109,19 @@ P1_Semaphore semDiskBlock;	//protect diskBlock table
 P1_Semaphore semDiskIO;		//protect diskIO
 
 
+//DAVID--------------------------------------------------------
+P1_Semaphore semPager0;
+P1_Semaphore semPager1;
+P1_Semaphore semPager2;
+P1_Semaphore semPager3;
+P1_Semaphore semPager4;
+P1_Semaphore semPager5;
+P1_Semaphore semPager6;
+P1_Semaphore semPager7;
+P1_Semaphore semPager8;
+P1_Semaphore semPager9;
+//ADDITION--------------------------------------------------------
+
 static void CheckPid(int);
 static void CheckMode(void);
 static void FaultHandler(int type, void *arg);
@@ -156,6 +169,20 @@ P3_VmInit(int mappings, int pages, int frames, int pagers)
 	semClockPos = P1_SemCreate(1);
 	semDiskBlock = P1_SemCreate(1);	
 	semDiskIO = P1_SemCreate(1);
+
+	
+	semPager0 = P1_SemCreate(1);
+	semPager1 = P1_SemCreate(1);
+	semPager2 = P1_SemCreate(1);
+	semPager3 = P1_SemCreate(1);
+	semPager4 = P1_SemCreate(1);
+	semPager5 = P1_SemCreate(1);
+	semPager6 = P1_SemCreate(1);
+	semPager7 = P1_SemCreate(1);
+	semPager8 = P1_SemCreate(1);
+	semPager9 = P1_SemCreate(1);
+	
+	
 	
     CheckMode();
 	
@@ -594,7 +621,7 @@ Pager(void* arg)
 	int quitStatus=0;
 	int errorCode;
 	int size = sizeof(Fault);
-	void *vmRegion;
+	void *vmRegionPager;
 	
 	int freeFrame;
 	int pagePtr;
@@ -603,6 +630,12 @@ Pager(void* arg)
 	
 	int oldPID;
 	int oldPage;
+	
+	
+	
+	Fault currFault;
+	Fault* p4buffer;
+	int fpage;
 	//int accessPtr;
 	//int i;
 	
@@ -621,19 +654,67 @@ Pager(void* arg)
         /* If there isn't one run clock algorithm, write page to disk if necessary */
         /* Load page into frame from disk or fill with zeros */
         /* Unblock waiting (faulting) process */
-		int fpage;	//page number that is faulted
 		
-		Fault currFault;
-		Fault* p4buffer = malloc(sizeof(Fault));
-		memset(p4buffer,0, sizeof(Fault));
-		//USLOSS_Console("right after memset, pid %d, addr %x  mbox %d\n", p4buffer->pid, p4buffer->addr, p4buffer->mbox);		
+		//List of in process variables-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/
+		
+			//page number that is faulted
+		
+		p4buffer = malloc(sizeof(Fault));
+		//memset(p4buffer,0, sizeof(Fault));
+		
+		/*
+		int recStatus;
+		int sendStatus;
+		int quitStatus=0;
+		int errorCode;
+		int size = sizeof(Fault);
+		void *vmRegion;
+	
+		int freeFrame;
+		int pagePtr;
+		int nosize = 0; //the size of the message sent back to FaultHandler.  This need to be a separate variable
+		int pagerPID;
+	
+		int oldPID;
+		int oldPage;
+		
+		
+		*/
+		//-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/
+		
+		
+		
+		//List of outside process variables-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/
+		/*
+		pagerMbox
+		
+		
+		*/
+		//-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/-/
+		
+		
+		
+		//USLOSS_Console("right after memset, pid %d, addr %x  mbox %d\n", p4buffer->pid, p4buffer->addr, p4buffer->mbox);
+
+		
 		recStatus = P2_MboxReceive(pagerMbox, p4buffer, &size);
-		//USLOSS_Console("pager just got another mesage, pid %d, addr %x  mbox %d\n", p4buffer->pid, p4buffer->addr, p4buffer->mbox);
+		
+		
+		
+		USLOSS_Console("pager just got another mesage, pid %d, addr %x  mbox %d\n", p4buffer->pid, p4buffer->addr, p4buffer->mbox);
 		//assert(recStatus >= 0);
+		
+		
+		
+		//--------------------------------------------------------------------------------------------------------------
+			USLOSS_Console("The current pager is: %d\n\n", P1_GetPID());
+			//P1_DumpProcesses();
+		
+		//--------------------------------------------------------------------------------------------------------------
 		
 		/*check to see if its been killed*/
 		if( (p4buffer->pid) == KILLSELF)  {
-			//USLOSS_Console("Pager trying to quit\n");
+			USLOSS_Console("\n\nPager trying to quit\n\n");
 			P1_Quit(quitStatus);
 			
 		}
@@ -675,7 +756,7 @@ Pager(void* arg)
 		//phase 3a logic..An unused frame exists
 		//**************************************************************************************************
 		if (freeFrame != -1)  {
-			vmRegion=USLOSS_MmuRegion(&pagePtr);
+			vmRegionPager=USLOSS_MmuRegion(&pagePtr);
 			pagerPID = P1_GetPID();		
 			
 			//Give mapping to Pager and update Pagers pageTable
@@ -688,12 +769,14 @@ Pager(void* arg)
 			P1_V(processes[pagerPID].semPTE);
 			//check if the page exists on disk, if not zero out the page
 			if (processes[currFault.pid].pageTable[fpage].block == -1) {
-				memset(vmRegion+fpage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
+				P1_P(processes[pagerPID].semPTE);
+				
+				memset(vmRegionPager+fpage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
 				errorCode = USLOSS_MmuUnmap(0, fpage);	
 				assert(errorCode == USLOSS_MMU_OK);
 				
 				//Unmap this from the Pager process and give mapping to the faulting process
-				P1_P(processes[pagerPID].semPTE);			
+							
 					processes[pagerPID].pageTable[fpage].frame = -1;
 					processes[pagerPID].pageTable[fpage].state = UNUSED;
 				P1_V(processes[pagerPID].semPTE);			
@@ -706,7 +789,7 @@ Pager(void* arg)
 			//page is on disk
 			else {
 				P1_P(semDiskIO);
-				writeNewPage(currFault.pid, fpage, freeFrame, vmRegion);  //the mapping for the faulting process is handled
+				writeNewPage(currFault.pid, fpage, freeFrame, vmRegionPager);  //the mapping for the faulting process is handled
 				P1_V(semDiskIO);														 // in writeNewPage
 			}
 		} //if (freeFrame != -1)
@@ -715,7 +798,7 @@ Pager(void* arg)
 		else {	//(freeFrame == -1) {
 			
 			P1_P(semClockPos);
-			
+			P1_P(semFreeFrame);
 			//find a frame to use
 			freeFrame = runClockAlgo(currFault.pid,fpage);
 			USLOSS_Console("freeFrame after return from clockAlgo %d\n", freeFrame);
@@ -724,7 +807,7 @@ Pager(void* arg)
 			
 			//find old page associated with frame
 			
-			P1_P(semFreeFrame);
+			
 			
 			oldPage = frmTable[freeFrame].page;
 			oldPID = frmTable[freeFrame].pid;
@@ -748,12 +831,12 @@ Pager(void* arg)
 			P1_P(semClockPos);
 			P1_P(semDiskIO);
 			
-			writeOldPage(oldPID, oldPage, freeFrame, vmRegion); 
+			writeOldPage(oldPID, oldPage, freeFrame, vmRegionPager); 
 			
 			//update the page table for the new process 
 			//processes[currFault.pid].pageTable[fpage].frame = freeFrame;
 			//processes[currFault.pid].pageTable[fpage].state = INCORE;
-			writeNewPage(currFault.pid, fpage, freeFrame, vmRegion);
+			writeNewPage(currFault.pid, fpage, freeFrame, vmRegionPager);
 			
 			P1_V(semDiskIO);
 			P1_V(semClockPos);
@@ -890,7 +973,13 @@ int runClockAlgo(int currPID, int pageNum) {
 
 
 */
-void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegion) {
+void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegionOld) {
+	
+	
+	
+	USLOSS_Console("\nwriteOldPage The Current PID is: %d\n", P1_GetPID());
+	
+	
 	int returnVal; 
 	int startTrack;	//track number to start writing from
 	int first;	//first sector to be written
@@ -961,7 +1050,7 @@ void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegion) {
 	
 	//copy to buffer then call disk write
 	buffer = malloc((USLOSS_MmuPageSize()));
-	memcpy(buffer, vmRegion+pageNum*USLOSS_MmuPageSize() , USLOSS_MmuPageSize());
+	memcpy(buffer, vmRegionOld+pageNum*USLOSS_MmuPageSize() , USLOSS_MmuPageSize());
 	returnVal = P2_DiskWrite(diskUnit, startTrack, first , sectorsPerBlock , buffer);
 	assert(returnVal==0);
 	errorCode = USLOSS_MmuUnmap(0, pageNum);
@@ -984,7 +1073,10 @@ void writeOldPage(int currPID, int pageNum, int freeFrame, void* vmRegion) {
 /* if this is a brand new page, zero it out.  Otherwise load the page in from disk;
  *
  */
-void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegion) {
+void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegionNew) {
+	
+	USLOSS_Console("\nwriteNewPage The Current PID is: %d\n", P1_GetPID());
+	
 	
 	int returnVal; 
 	int startTrack;	//track number to start writing from
@@ -1025,14 +1117,14 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegion) {
 	//brand new page
 	
 	if (processes[newPID].pageTable[newPage].block == -1 ) {
-		memset(vmRegion+newPage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
+		memset(vmRegionNew+newPage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
 		USLOSS_Console("brand new page %d loaded for process %d into RAM at freeFRAME %d\n", newPage, newPID, freeFrame);
 		//free(buffer);	
 	}
 
 	//page is on disk so load into memory
 	else {
-		
+		//P1_P(semPager0);
 		assignedBlock = processes[newPID].pageTable[newPage].block;
 		//USLOSS_Console("assignedBlock from disk: %d\n", assignedBlock);
 		startTrack = assignedBlock/2;
@@ -1040,9 +1132,9 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegion) {
 		
 		returnVal = P2_DiskRead(diskUnit, startTrack, first , sectorsPerBlock , buffer);
 		assert(returnVal==0);
-		memcpy(vmRegion+newPage*USLOSS_MmuPageSize() , buffer, USLOSS_MmuPageSize());
+		memcpy(vmRegionNew+newPage*USLOSS_MmuPageSize() , buffer, USLOSS_MmuPageSize());
 		USLOSS_Console("loading page %d from block %d for process %d, into RAM at freeFRAME %d \n", newPage, assignedBlock, newPID, freeFrame);
-		
+		//P1_V(semPager0);
 		
 		P1_P(semP3_VmStats);
 		P3_vmStats.pageIns++;
