@@ -1095,7 +1095,7 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegionNew) {
 	
 	//brand new page
 	if (processes[newPID].pageTable[newPage].block == -1 ) {
-		memset(vmRegionNew+newPage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
+		memset(vmRegion+newPage*USLOSS_MmuPageSize(), 0, USLOSS_MmuPageSize());
 		USLOSS_Console("brand new page %d loaded for process %d into RAM at freeFRAME %d\n", newPage, newPID, freeFrame);
 		//free(buffer);	
 	}
@@ -1109,7 +1109,7 @@ void writeNewPage(int newPID, int newPage, int freeFrame, void* vmRegionNew) {
 		
 		returnVal = P2_DiskRead(diskUnit, startTrack, first , sectorsPerBlock , buffer);
 		assert(returnVal==0);
-		memcpy(vmRegionNew+newPage*USLOSS_MmuPageSize() , buffer, USLOSS_MmuPageSize());
+		memcpy(vmRegion+newPage*USLOSS_MmuPageSize() , buffer, USLOSS_MmuPageSize());
 		USLOSS_Console("reading %s  from  assignedBlock %d \n", buffer, assignedBlock);
 		USLOSS_Console("loading page %d from block %d for process %d, into RAM at freeFRAME %d \n", newPage, assignedBlock, newPID, freeFrame);
 		P1_P(semP3_VmStats);
@@ -1148,6 +1148,28 @@ int findDiskBlock(int oldPID) {
 	USLOSS_Halt(10);
 	return 0;
 }
+
+void dumpPageTable() {
+	int i,j;
+	for (i=20;i<21;i++) {
+		for (j=0;j<numPages;j++) {
+			USLOSS_Console("process %d page table %d: frame: %d state: %d page: %d\n", i, j, processes[i].pageTable[j].frame, 
+			processes[i].pageTable[j].state, processes[i].pageTable[j].block);	
+		}
+		
+	}
+}
+
+void dumpFrameTable() {
+	int i;
+	
+	for (i=0;i<numFrames;i++) {
+		USLOSS_Console("frame %d page %d state %d pid %\n", frmTable[i].page, frmTable[i].state, frmTable[i].pid);
+	}
+	
+}
+
+
 
 
 //
